@@ -1,7 +1,7 @@
 import './load_env.mjs';
 import { createServer } from 'node:http';
 import { appendFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { readTextIfExists, safeReadJson, writeJson } from './lib_state.mjs';
 
@@ -98,8 +98,10 @@ function mergeJobs(jobs, processed, failed, outputJobs) {
       title: item.title || id,
       replayUrl: item.replayUrl || url,
       jobDir: item.jobDir || '',
-      status: 'done',
+      status: item.status || 'done',
+      phase: item.status || 'done',
       feishuDocUrl: item.feishuDocUrl || readTextIfExists(path.join(item.jobDir || '', 'feishu_doc_url.txt')).trim(),
+      feishuBaseStatus: item.feishuBaseStatus || '',
       updatedAt: item.finishedAt || new Date().toISOString()
     });
   }
@@ -133,18 +135,24 @@ function scanOutputJobs() {
     })
     .map((dir) => {
       const audioReport = safeReadJson(path.join(dir, 'audio_report.json'), {});
+      const baseStatus = safeReadJson(path.join(dir, 'feishu_base_status.json'), {});
       const docUrl = readTextIfExists(path.join(dir, 'feishu_doc_url.txt')).trim();
       const cleanExists = hasContent(path.join(dir, 'transcript_clean.md'));
       const rawExists = hasContent(path.join(dir, 'transcript_raw.md'));
       const recordingExists = existsSync(path.join(dir, 'recording.wav'));
+      const status = docUrl && baseStatus.status === 'failed'
+        ? 'base_failed'
+        : docUrl ? 'done' : cleanExists ? 'cleaned' : rawExists ? 'transcribed' : recordingExists ? 'recorded' : 'created';
       return {
         id: path.basename(dir),
         title: path.basename(dir),
         jobDir: dir,
         replayUrl: readTextIfExists(path.join(dir, 'source_url.txt')).trim(),
-      status: docUrl ? 'done' : cleanExists ? 'cleaned' : rawExists ? 'transcribed' : recordingExists ? 'recorded' : 'created',
-      phase: docUrl ? 'done' : cleanExists ? 'cleaned' : rawExists ? 'transcribed' : recordingExists ? 'recorded' : 'created',
+        status,
+        phase: status,
         feishuDocUrl: docUrl,
+        feishuBaseStatus: baseStatus.status || '',
+        feishuBaseError: baseStatus.error || '',
         isSilent: audioReport.is_probably_silent,
         duration: audioReport.duration_seconds,
         updatedAt: fileMtimeIso(dir)
@@ -247,9 +255,43 @@ function summarizeFailure(logPath, command, code) {
   ].join('\n').trim();
 }
 
+function checkFeishu() {
+  const result = spawnSync('npm', ['run', 'feishu:check'], {
+    cwd,
+    encoding: 'utf8',
+    env: process.env
+  });
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
+  let status = 'connected';
+  let label = '飞书已连接';
+  if (result.status !== 0) {
+    if (/keychain not initialized/i.test(output)) {
+      status = 'keychain';
+      label = 'Keychain 不可用';
+    } else if (/需要补充授权|missing|required scope|auth login/i.test(output)) {
+      status = 'unauthorized';
+      label = '飞书未授权';
+    } else {
+      status = 'error';
+      label = '飞书检查失败';
+    }
+  }
+  return {
+    ok: result.status === 0,
+    status,
+    label,
+    output,
+    checkedAt: new Date().toISOString()
+  };
+}
+
 async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/jobs') {
     return json(res, 200, { jobs: allJobs().map(enrichJob), running: [...running.keys()] });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/feishu/check') {
+    return json(res, 200, checkFeishu());
   }
 
   if (req.method === 'GET' && pathname.startsWith('/api/jobs/')) {
@@ -275,16 +317,37 @@ async function handleApi(req, res, pathname) {
     };
     spawnJob(job, 'npm', ['run', 'run:mvp'], {
       REPLAY_URL: replayUrl,
-      RECORD_SECONDS: String(Number(body.recordSeconds || process.env.RECORD_SECONDS || 60)),
+      RECORD_SECONDS: String(Number(body.recordSeconds || process.env.RECORD_SECONDS || 14400)),
+      RECORD_MODE: body.recordMode || process.env.RECORD_MODE || 'complete',
       FORCE_RERUN: body.forceRerun === false ? '0' : '1',
       AUDIO_DEVICE_NAME: body.audioDeviceName || process.env.AUDIO_DEVICE_NAME || 'BlackHole 2ch',
       BROWSER_EXECUTABLE_PATH: body.browserExecutablePath || process.env.BROWSER_EXECUTABLE_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      BROWSER_DRIVER: body.browserDriver || process.env.BROWSER_DRIVER || 'open-chrome',
+      BROWSER_DRIVER: body.browserDriver || process.env.UI_BROWSER_DRIVER || 'playwright',
       MANUAL_START_DELAY_SECONDS: String(Number(body.manualStartDelaySeconds || process.env.MANUAL_START_DELAY_SECONDS || 20)),
       MANUAL_TITLE: manualTitle || process.env.MANUAL_TITLE || '小鹅通回放手动采集',
       PLAYWRIGHT_IMPORT_TIMEOUT_MS: process.env.PLAYWRIGHT_IMPORT_TIMEOUT_MS || '120000',
       DEBUG_BROWSER_TIMEOUT_MS: process.env.DEBUG_BROWSER_TIMEOUT_MS || '120000'
     });
+    return json(res, 202, { job });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/feishu/retry-base') {
+    const body = await readBody(req);
+    if (hasActiveJob()) return json(res, 409, { error: '已有任务正在运行，请等当前任务结束后再重试。' });
+    const jobDir = String(body.jobDir || '').trim();
+    if (!jobDir) return json(res, 400, { error: 'jobDir is required' });
+    const resolvedJobDir = path.resolve(cwd, jobDir);
+    const title = String(body.title || path.basename(resolvedJobDir)).trim();
+    const id = `retry-base-${Date.now()}`;
+    const job = {
+      id,
+      title,
+      jobDir: resolvedJobDir,
+      status: 'postprocessing',
+      phase: 'feishu',
+      updatedAt: new Date().toISOString()
+    };
+    spawnJob(job, 'node', ['scripts/feishu_base_index.mjs', '--job-dir', resolvedJobDir, '--title', title], {});
     return json(res, 202, { job });
   }
 

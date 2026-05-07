@@ -52,12 +52,14 @@ function runStep(name, command, stepArgs, options = {}) {
 
 function markProcessed(docUrl = '') {
   const processed = safeReadJson(processedPath, {});
+  const baseStatus = safeReadJson(path.join(jobDir, 'feishu_base_status.json'), {});
   processed[replayUrl || jobDir] = {
-    status: 'done',
+    status: baseStatus.status === 'failed' ? 'base_failed' : 'done',
     title,
     jobDir,
     replayUrl,
     feishuDocUrl: docUrl,
+    feishuBaseStatus: baseStatus.status || '',
     finishedAt: new Date().toISOString()
   };
   writeJson(processedPath, processed);

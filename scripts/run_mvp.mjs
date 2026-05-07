@@ -54,7 +54,8 @@ const profileDir = tempProfile
   ? path.resolve('/tmp', `xiaoe-playwright-profile-${Date.now()}`)
   : path.resolve(cwd, process.env.BROWSER_PROFILE_DIR || './browser-profile/xiaoe');
 const outputDir = path.resolve(cwd, process.env.OUTPUT_DIR || './output');
-const recordSeconds = Number(process.env.RECORD_SECONDS || 5400);
+const recordSeconds = Number(process.env.RECORD_SECONDS || 14400);
+const recordMode = process.env.RECORD_MODE || 'complete';
 const processedPath = path.resolve(cwd, './data/processed.json');
 const failedPath = path.resolve(cwd, './data/failed_jobs.json');
 const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
@@ -111,6 +112,7 @@ function printStartupDiagnostics(processed) {
     cwd,
     REPLAY_URL: replayUrl,
     RECORD_SECONDS: recordSeconds,
+    RECORD_MODE: recordMode,
     AUDIO_DEVICE_NAME: process.env.AUDIO_DEVICE_NAME || 'BlackHole 2ch',
     AUDIO_DEVICE_INDEX: process.env.AUDIO_DEVICE_INDEX || '',
     DRY_RUN: dryRun,
@@ -396,6 +398,38 @@ async function isVideoPlaying(page) {
   }
 
   return false;
+}
+
+async function isPlaybackEnded(page) {
+  for (const frame of page.frames()) {
+    const ended = await frame.evaluate(() => {
+      const media = [...document.querySelectorAll('video, audio')];
+      if (!media.length) return false;
+      return media.some((item) => {
+        const duration = Number(item.duration);
+        if (item.ended) return true;
+        return Number.isFinite(duration) && duration > 30 && item.currentTime >= duration - 2;
+      });
+    }).catch(() => false);
+    if (ended) return true;
+  }
+  return false;
+}
+
+async function monitorPlaybackEnd(page, stopFile, maxSeconds, controller = { stopped: false }) {
+  const started = Date.now();
+  log(`[record] 完整录制模式：监听播放器结束，最长保护 ${maxSeconds} 秒。`);
+  while (Date.now() - started < maxSeconds * 1000) {
+    if (controller.stopped) return 'cancelled';
+    if (await isPlaybackEnded(page)) {
+      writeFileSync(stopFile, `player ended at ${new Date().toISOString()}\n`, 'utf8');
+      log(`[record] 检测到播放器结束，已发出停止录音信号：${stopFile}`);
+      return 'player_ended';
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  log('[record] 未检测到播放器结束信号，将按最长保护时长停止。');
+  return 'max_seconds';
 }
 
 async function collectPlayCandidates(page) {
@@ -743,17 +777,41 @@ async function detectBrokenPlaybackPage(page) {
   return '';
 }
 
-async function runPipeline(jobDir, title) {
+async function runPipeline(jobDir, title, page = null) {
   log('[record] 即将录制 BlackHole 2ch。');
   log('[record] 请确认 macOS 系统输出为“多输出设备”，且其中包含 MacBook Air 扬声器 + BlackHole 2ch。');
   log('[record] 请确认当前小鹅通页面正在播放，且你自己能听到声音。');
-  log(`启动录音：${recordSeconds} 秒`);
-  await runCommand('录音与转写', pythonBin, [
+
+  const recordArgs = [
     'py/record_transcribe.py',
     '--title', title,
     '--job-dir', jobDir,
     '--seconds', String(recordSeconds)
-  ]);
+  ];
+
+  let monitorPromise = null;
+  const monitorController = { stopped: false };
+  if (recordMode === 'complete' && page) {
+    const stopFile = path.join(jobDir, 'recording.stop');
+    recordArgs.push('--stop-file', stopFile);
+    monitorPromise = monitorPlaybackEnd(page, stopFile, recordSeconds, monitorController).catch((error) => {
+      log(`[record] 播放结束监听失败，将继续按最长保护时长录制：${error.message}`);
+      return 'watch_failed';
+    });
+    log(`启动录音：完整录制优先，最长保护 ${recordSeconds} 秒`);
+  } else {
+    if (recordMode === 'complete') {
+      log('[record] 当前模式无法检测播放器结束，将按最长保护时长录制。');
+    }
+    log(`启动录音：${recordSeconds} 秒`);
+  }
+
+  try {
+    await runCommand('录音与转写', pythonBin, recordArgs);
+  } finally {
+    monitorController.stopped = true;
+  }
+  if (monitorPromise) await monitorPromise;
 
   log('录音结束：recording.wav 应已生成');
   log('转写完成：transcript_raw.md 应已生成');
@@ -797,13 +855,15 @@ async function runOpenChromeFallback(processed) {
   log(`[fallback] ${manualStartDelaySeconds} 秒后开始录音。请确认小鹅通页面已播放，且你能听到声音。`);
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, manualStartDelaySeconds) * 1000));
   await runPipeline(jobDir, title);
+  const baseStatus = readJson(path.join(jobDir, 'feishu_base_status.json'), {});
 
   processed[replayUrl] = {
-    status: 'done',
+    status: baseStatus.status === 'failed' ? 'base_failed' : 'done',
     title,
     jobDir,
     replayUrl,
     feishuDocUrl: existsSync(path.join(jobDir, 'feishu_doc_url.txt')) ? readFileSync(path.join(jobDir, 'feishu_doc_url.txt'), 'utf8').trim() : '',
+    feishuBaseStatus: baseStatus.status || '',
     finishedAt: new Date().toISOString()
   };
   writeJson(processedPath, processed);
@@ -919,13 +979,15 @@ async function main() {
       return;
     }
 
-    await runPipeline(jobDir, title);
+    await runPipeline(jobDir, title, page);
+    const baseStatus = readJson(path.join(jobDir, 'feishu_base_status.json'), {});
 
     processed[replayUrl] = {
-      status: 'done',
+      status: baseStatus.status === 'failed' ? 'base_failed' : 'done',
       title,
       jobDir,
       feishuDocUrl: existsSync(path.join(jobDir, 'feishu_doc_url.txt')) ? readFileSync(path.join(jobDir, 'feishu_doc_url.txt'), 'utf8').trim() : '',
+      feishuBaseStatus: baseStatus.status || '',
       finishedAt: new Date().toISOString()
     };
     writeJson(processedPath, processed);

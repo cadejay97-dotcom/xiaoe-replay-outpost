@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from urllib import request
@@ -67,26 +68,30 @@ def resolve_audio_input(device_name: str):
     return ":default"
 
 
-def record_audio(job_dir: Path, seconds: int) -> Path:
+def record_audio(job_dir: Path, seconds: int, stop_file: str = "") -> Path:
     device = os.getenv("AUDIO_DEVICE_NAME", "BlackHole 2ch")
     audio_input = resolve_audio_input(device)
     raw_path = job_dir / "recording.m4a"
     wav_path = job_dir / "recording.wav"
 
-    print(f"[record] 开始录音：device={device}, seconds={seconds}")
+    print(f"[record] 开始录音：device={device}, max_seconds={seconds}")
     try:
-        result = run([
+        command = [
             "ffmpeg",
             "-y",
             "-f", "avfoundation",
             "-i", audio_input,
-            "-t", str(seconds),
             "-ac", "1",
             "-ar", "16000",
             str(raw_path),
-        ])
-        if result.stderr:
-            print(result.stderr)
+        ]
+        if stop_file:
+            run_ffmpeg_until_stop(command, Path(stop_file), seconds)
+        else:
+            command[6:6] = ["-t", str(seconds)]
+            result = run(command)
+            if result.stderr:
+                print(result.stderr)
     except subprocess.CalledProcessError as error:
         stderr = error.stderr or ""
         invalid_index = "Invalid audio device index" in stderr
@@ -133,6 +138,65 @@ def record_audio(job_dir: Path, seconds: int) -> Path:
 
     print(f"[record] wav 已生成：{wav_path}")
     return wav_path
+
+
+def run_ffmpeg_until_stop(command, stop_file: Path, max_seconds: int):
+    stop_file.parent.mkdir(parents=True, exist_ok=True)
+    if stop_file.exists():
+        stop_file.unlink()
+
+    print(f"[record] 完整录制模式：等待停止信号 {stop_file}")
+    print(f"[record] 最长保护时长：{max_seconds} 秒")
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    started = time.time()
+    stop_reason = "max_seconds"
+    try:
+        while True:
+            if process.poll() is not None:
+                stop_reason = f"ffmpeg_exited_{process.returncode}"
+                break
+            if stop_file.exists():
+                stop_reason = "player_ended"
+                break
+            if max_seconds > 0 and time.time() - started >= max_seconds:
+                stop_reason = "max_seconds"
+                break
+            time.sleep(1)
+
+        if process.poll() is None:
+            print(f"[record] 停止录音：reason={stop_reason}")
+            process.terminate()
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+    finally:
+        stdout, stderr = process.communicate()
+        if stdout:
+            print(stdout)
+        if stderr:
+            print(stderr)
+
+    if process.returncode not in (0, 255, -15, None):
+        raise subprocess.CalledProcessError(process.returncode, command, output=stdout, stderr=stderr)
+
+    stop_report = {
+        "stop_reason": stop_reason,
+        "elapsed_seconds": round(time.time() - started, 2),
+        "max_seconds": max_seconds,
+        "stop_file": str(stop_file),
+    }
+    (stop_file.parent / "record_stop_report.json").write_text(
+        json.dumps(stop_report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"[record] 录音停止报告已生成：{stop_file.parent / 'record_stop_report.json'}")
 
 
 def parse_volume(stderr: str):
@@ -463,13 +527,14 @@ def main():
     parser.add_argument("--title", required=True)
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--seconds", type=int, default=5400)
+    parser.add_argument("--stop-file", default="")
     parser.add_argument("--audio-test-only", action="store_true")
     args = parser.parse_args()
 
     job_dir = Path(args.job_dir)
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    audio_path = record_audio(job_dir, args.seconds)
+    audio_path = record_audio(job_dir, args.seconds, args.stop_file)
     report = analyze_audio(audio_path, job_dir)
 
     if args.audio_test_only:

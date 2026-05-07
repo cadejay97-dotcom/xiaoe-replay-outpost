@@ -39,18 +39,19 @@
       <section class="workbench">
         <header class="header">
           <div>
-            <p class="caption">Local console</p>
+            <p class="caption">Cloud console + Mac Runner</p>
             <h1>小鹅通回放采集</h1>
           </div>
           <div class="header-actions">
             <span id="serviceState" class="service-pill">连接中</span>
+            <span id="feishuState" class="service-pill">飞书检查中</span>
             <button id="refreshBtn" class="button quiet" type="button">刷新</button>
           </div>
         </header>
 
         <section class="command-bar">
           <div id="offlineNotice" class="offline-notice" role="status">
-            这是静态预览。真正采集需要在本机 Terminal 运行 npm run serve，然后打开 http://localhost:8787。
+            Mac 采集服务未连接。云端操作台可以打开，但真正录音、打开 Chrome、调用飞书 CLI，需要先在本机启动 Runner：npm run serve。
           </div>
           <label class="input-group replay-input">
             <span>回放链接</span>
@@ -61,9 +62,9 @@
             <input id="manualTitle" type="text" placeholder="用于飞书字段“广泛解答”" />
           </label>
           <fieldset class="duration-group" aria-label="录制时长">
-            <legend>录制时长</legend>
+            <legend>完整录制保护时长</legend>
             <label>
-              <input id="recordHours" type="number" min="0" max="12" step="1" value="0" />
+              <input id="recordHours" type="number" min="0" max="12" step="1" value="4" />
               <span>时</span>
             </label>
             <label>
@@ -74,10 +75,11 @@
               <input id="recordSeconds" type="number" min="0" max="59" step="1" value="0" />
               <span>秒</span>
             </label>
-            <small id="durationPreview">录完自动停止：1 分钟</small>
+            <small id="durationPreview">完整录制优先；最长保护 4 小时</small>
           </fieldset>
           <button id="runBtn" class="button primary" type="button">开始采集</button>
           <button id="postprocessBtn" class="button secondary" type="button">处理现有录音</button>
+          <button id="retryBaseBtn" class="button secondary" type="button">重试入库</button>
         </section>
 
         <section class="metrics" aria-label="任务概览">

@@ -3,6 +3,9 @@ const state = {
   selectedId: null,
   serviceOnline: true,
   submitting: false,
+  feishu: { status: 'checking', label: '飞书检查中' },
+  feishuCheckedAt: 0,
+  feishuChecking: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -27,6 +30,7 @@ function statusLabel(status) {
     recorded: '已录音',
     transcribed: '已转写',
     cleaned: '已清洗',
+    base_failed: '文档已创建，Base 入库失败',
     postprocessing: '后处理中',
     done: '已入库',
     failed: '失败',
@@ -46,6 +50,7 @@ function phaseLabel(job) {
     cleaning: '清洗中',
     cleaned: '已清洗',
     feishu: '写飞书中',
+    base_failed: '文档已创建，Base 入库失败',
     postprocessing: '后处理中',
     done: '已入库',
     failed: '失败',
@@ -65,19 +70,21 @@ function stepRank(status) {
     cleaning: 4,
     cleaned: 4,
     feishu: 5,
+    base_failed: 5,
     done: 5,
   };
   return ranks[status] || 0;
 }
 
 function pillClass(status) {
-  if (status === 'done') return 'done';
-  if (status === 'failed') return 'failed';
+  if (['done'].includes(status)) return 'done';
+  if (['failed', 'base_failed'].includes(status)) return 'failed';
   return '';
 }
 
 function render() {
   renderService();
+  renderFeishu();
   renderMetrics();
   renderJobs();
   renderDetail(state.jobs.find((job) => job.id === state.selectedId) || null);
@@ -86,15 +93,24 @@ function render() {
 
 function renderService() {
   const el = $('serviceState');
-  el.textContent = state.serviceOnline ? '服务在线' : '静态预览';
+  el.textContent = state.serviceOnline ? 'Mac Runner 在线' : 'Mac Runner 未连接';
   el.classList.toggle('online', state.serviceOnline);
   el.classList.toggle('offline', !state.serviceOnline);
   $('offlineNotice').classList.toggle('visible', !state.serviceOnline);
 }
 
+function renderFeishu() {
+  const el = $('feishuState');
+  if (!el) return;
+  const status = state.feishu?.status || 'checking';
+  el.textContent = state.feishu?.label || '飞书检查中';
+  el.classList.toggle('online', status === 'connected');
+  el.classList.toggle('offline', ['unauthorized', 'keychain', 'error', 'offline'].includes(status));
+}
+
 function renderMetrics() {
   const recorded = state.jobs.filter((job) => ['recorded', 'transcribed', 'cleaned', 'done'].includes(job.status)).length;
-  const done = state.jobs.filter((job) => job.status === 'done').length;
+  const done = state.jobs.filter((job) => ['done', 'base_failed'].includes(job.status)).length;
   const failed = state.jobs.filter((job) => job.status === 'failed').length;
   const selected = state.jobs.find((job) => job.id === state.selectedId);
   $('metricRecorded').textContent = recorded;
@@ -111,8 +127,15 @@ function renderActions() {
   const busy = state.submitting || hasActiveJob();
   $('runBtn').disabled = busy || !state.serviceOnline;
   $('postprocessBtn').disabled = busy || !state.serviceOnline;
+  $('retryBaseBtn').disabled = busy || !state.serviceOnline || !canRetryBase();
   $('runBtn').textContent = busy ? '任务进行中' : '开始采集';
   $('postprocessBtn').textContent = busy ? '请稍候' : '处理现有录音';
+  $('retryBaseBtn').textContent = busy ? '请稍候' : '重试入库';
+}
+
+function canRetryBase() {
+  const job = state.jobs.find((item) => item.id === state.selectedId);
+  return Boolean(job?.jobDir && job?.feishuDocUrl);
 }
 
 function formatDuration(totalSeconds) {
@@ -136,7 +159,7 @@ function readRecordSeconds() {
 
 function updateDurationPreview() {
   const total = readRecordSeconds();
-  $('durationPreview').textContent = `录完自动停止：${formatDuration(total)}（${total} 秒）`;
+  $('durationPreview').textContent = `完整录制优先；最长保护 ${formatDuration(total)}（${total} 秒）`;
 }
 
 function renderJobs() {
@@ -200,6 +223,7 @@ function renderDetail(job) {
     phase: phaseLabel(job),
     duration: formatDuration(job.duration),
     durationSeconds: job.duration,
+    feishuBaseStatus: job.feishuBaseStatus,
     updatedAt: job.updatedAt,
     logPath: job.logPath,
   }, null, 2);
@@ -207,7 +231,7 @@ function renderDetail(job) {
   setDocLink(job.feishuDocUrl || '');
   $('audioStatus').textContent = job.isSilent === false ? '声音有效' : job.isSilent === true ? '可能静音' : '未检测';
   $('jobDir').textContent = job.jobDir || '未生成';
-  $('errorText').textContent = job.error || '无';
+  $('errorText').textContent = job.error || job.feishuBaseError || '无';
 }
 
 function setDocLink(url) {
@@ -239,11 +263,31 @@ async function refresh() {
     const data = await res.json();
     state.serviceOnline = true;
     state.jobs = data.jobs || [];
+    refreshFeishu();
   } catch {
     state.serviceOnline = false;
     state.jobs = sampleJobs;
+    state.feishu = { status: 'offline', label: 'Mac Runner 未连接' };
   }
   render();
+}
+
+async function refreshFeishu() {
+  if (state.feishuChecking || Date.now() - state.feishuCheckedAt < 15000) return;
+  state.feishuChecking = true;
+  try {
+    const res = await fetch('/api/feishu/check');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.feishu = await res.json();
+    state.feishuCheckedAt = Date.now();
+    renderFeishu();
+  } catch {
+    state.feishu = { status: 'error', label: '飞书状态未知' };
+    state.feishuCheckedAt = Date.now();
+    renderFeishu();
+  } finally {
+    state.feishuChecking = false;
+  }
 }
 
 async function postJson(url, payload) {
@@ -272,7 +316,31 @@ async function startRun() {
   state.submitting = true;
   render();
   try {
-    await postJson('/api/run', { replayUrl, title, recordSeconds, forceRerun: true });
+    await postJson('/api/run', { replayUrl, title, recordSeconds, recordMode: 'complete', forceRerun: true });
+    await refresh();
+  } finally {
+    state.submitting = false;
+    render();
+  }
+}
+
+async function retryBase() {
+  if (!state.serviceOnline) {
+    alert('先在 Terminal 里运行 npm run serve，再刷新页面。');
+    return;
+  }
+  const selected = state.jobs.find((job) => job.id === state.selectedId);
+  if (!selected?.jobDir || !selected?.feishuDocUrl) {
+    alert('请先选择一个已经生成飞书文档链接的任务。');
+    return;
+  }
+  state.submitting = true;
+  render();
+  try {
+    await postJson('/api/feishu/retry-base', {
+      jobDir: selected.jobDir,
+      title: selected.title || selected.id,
+    });
     await refresh();
   } finally {
     state.submitting = false;
@@ -303,6 +371,7 @@ async function startPostprocess() {
 $('refreshBtn').addEventListener('click', refresh);
 $('runBtn').addEventListener('click', () => startRun().catch((error) => alert(error.message)));
 $('postprocessBtn').addEventListener('click', () => startPostprocess().catch((error) => alert(error.message)));
+$('retryBaseBtn').addEventListener('click', () => retryBase().catch((error) => alert(error.message)));
 ['recordHours', 'recordMinutes', 'recordSeconds'].forEach((id) => {
   $(id).addEventListener('input', updateDurationPreview);
 });

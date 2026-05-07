@@ -91,25 +91,27 @@ REPLAY_URL="你的小鹅通回放链接" npm run run:mvp
 如果之前有旧输出或 `processed.json` 导致跳过，用强制重跑：
 
 ```bash
-FORCE_RERUN=1 RECORD_SECONDS=60 AUDIO_DEVICE_NAME="BlackHole 2ch" REPLAY_URL="你的小鹅通回放链接" npm run run:mvp
+FORCE_RERUN=1 RECORD_SECONDS=60 AUDIO_DEVICE_NAME="BlackHole 2ch" REPLAY_URL="https://rn6vx.xetslk.com/sl/2ZTCjx" npm run run:mvp
 ```
 
-`RECORD_SECONDS` 仍然是脚本底层参数。前端采集台里不用手算秒，可以直接填“小时 / 分钟 / 秒”，录制到点会自动停止。
+默认是完整录制优先：Playwright 会尝试检测播放器结束并停止录音；`RECORD_SECONDS` 是最长保护时长，防止异常无限录制。前端采集台里不用手算秒，可以直接填“小时 / 分钟 / 秒”。
 
-如果 Playwright 自带 Chromium 播放小鹅通提示“加载失败”，使用系统 Chrome：
+默认使用 Playwright 控制可见的系统 Chrome：
 
 ```bash
 BROWSER_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+BROWSER_DRIVER="playwright"
+RECORD_MODE="complete"
 ```
 
-如果 Playwright 在本机卡在 import 阶段，可以先用兜底模式跑通采集：
+如果 Playwright 在本机卡在 import 阶段，可以临时用兜底模式跑通采集：
 
 ```bash
 BROWSER_DRIVER="open-chrome"
 MANUAL_START_DELAY_SECONDS=20
 ```
 
-这个模式会直接打开系统 Chrome，等待 20 秒后开始录音。请在倒计时内确认页面已经播放。
+这个模式会直接打开系统 Chrome，等待 20 秒后开始录音。它不能检测播放器结束，只会按最长保护时长停止。
 
 ## 已有录音后处理
 
