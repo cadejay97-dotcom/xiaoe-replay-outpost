@@ -52,13 +52,13 @@ function createWithLarkCli(markdown) {
     'v2',
     '--as',
     'user',
-    '--title',
-    title,
-    '--markdown',
+    '--doc-format',
+    'markdown',
+    '--content',
     `@${uploadArgPath}`
   ];
   const folderToken = process.env.FEISHU_DOC_PARENT_FOLDER_TOKEN?.trim();
-  if (folderToken) args.push('--folder-token', folderToken);
+  if (folderToken) args.push('--parent-token', folderToken);
 
   const result = spawnSync(
     'lark-cli',
