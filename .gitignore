@@ -1,0 +1,11 @@
+.env
+.venv/
+.vercel/
+browser-profile/
+data/
+node_modules/
+node_modules-partial-*/
+output/
+*.command
+.DS_Store
+*.log

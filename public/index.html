@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>前哨站采集台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!--
+      Huashu-Design pass
+      Assumption: this is a local operator console, not a marketing site.
+      Design role: dense dashboard for repeated work; the Feishu text link is the primary artifact.
+      Placeholder policy: when the API service is offline, show a clear local-shell state instead of fake success.
+    -->
+    <main class="app-shell">
+      <aside class="rail">
+        <div class="identity">
+          <div class="identity-mark">前</div>
+          <div>
+            <strong>前哨站</strong>
+            <span>Replay Capture OS</span>
+          </div>
+        </div>
+
+        <nav class="rail-nav" aria-label="采集台导航">
+          <button class="rail-item active" type="button">采集任务</button>
+          <button class="rail-item" type="button">文稿链接</button>
+          <button class="rail-item" type="button">飞书入库</button>
+        </nav>
+
+        <section class="system-card">
+          <span class="caption">采集策略</span>
+          <strong>Chrome 播放 + BlackHole 录音</strong>
+          <p>只录本机已授权播放的音频，不处理受保护视频源。</p>
+        </section>
+      </aside>
+
+      <section class="workbench">
+        <header class="header">
+          <div>
+            <p class="caption">Local console</p>
+            <h1>小鹅通回放采集</h1>
+          </div>
+          <div class="header-actions">
+            <span id="serviceState" class="service-pill">连接中</span>
+            <button id="refreshBtn" class="button quiet" type="button">刷新</button>
+          </div>
+        </header>
+
+        <section class="command-bar">
+          <label class="input-group replay-input">
+            <span>回放链接</span>
+            <input id="replayUrl" type="url" placeholder="粘贴你的小鹅通回放链接" />
+          </label>
+          <fieldset class="duration-group" aria-label="录制时长">
+            <legend>录制时长</legend>
+            <label>
+              <input id="recordHours" type="number" min="0" max="12" step="1" value="0" />
+              <span>时</span>
+            </label>
+            <label>
+              <input id="recordMinutes" type="number" min="0" max="59" step="1" value="1" />
+              <span>分</span>
+            </label>
+            <label>
+              <input id="recordSeconds" type="number" min="0" max="59" step="1" value="0" />
+              <span>秒</span>
+            </label>
+            <small id="durationPreview">录完自动停止：1 分钟</small>
+          </fieldset>
+          <button id="runBtn" class="button primary" type="button">开始采集</button>
+          <button id="postprocessBtn" class="button secondary" type="button">处理现有录音</button>
+        </section>
+
+        <section class="metrics" aria-label="任务概览">
+          <article>
+            <span>有效录音</span>
+            <strong id="metricRecorded">0</strong>
+          </article>
+          <article>
+            <span>已入库</span>
+            <strong id="metricDone">0</strong>
+          </article>
+          <article>
+            <span>失败</span>
+            <strong id="metricFailed">0</strong>
+          </article>
+          <article class="wide-metric">
+            <span>当前输出</span>
+            <strong id="metricCurrent">等待任务</strong>
+          </article>
+        </section>
+
+        <div class="main-grid">
+          <section class="panel queue-panel">
+            <div class="panel-title">
+              <div>
+                <p class="caption">Queue</p>
+                <h2>任务队列</h2>
+              </div>
+              <span id="jobCount">0 条</span>
+            </div>
+            <div id="jobList" class="job-list"></div>
+          </section>
+
+          <section class="panel progress-panel">
+            <div class="panel-title">
+              <div>
+                <p class="caption">Run state</p>
+                <h2>当前进度</h2>
+              </div>
+              <span id="currentStatus">等待任务</span>
+            </div>
+
+            <div class="timeline">
+              <div class="step" data-step="recorded">
+                <span class="step-index">01</span>
+                <div><b>录音</b><small>生成 recording.wav</small></div>
+              </div>
+              <div class="step" data-step="transcribed">
+                <span class="step-index">02</span>
+                <div><b>转写</b><small>生成 transcript_raw.md</small></div>
+              </div>
+              <div class="step" data-step="cleaned">
+                <span class="step-index">03</span>
+                <div><b>清洗</b><small>生成 transcript_clean.md</small></div>
+              </div>
+              <div class="step" data-step="done">
+                <span class="step-index">04</span>
+                <div><b>入库</b><small>生成飞书文档链接</small></div>
+              </div>
+            </div>
+
+            <pre id="jobMeta" class="meta-box"></pre>
+          </section>
+
+          <section class="panel link-panel">
+            <div class="panel-title">
+              <div>
+                <p class="caption">Primary artifact</p>
+                <h2>飞书文本链接</h2>
+              </div>
+              <span>优先看这里</span>
+            </div>
+
+            <a id="docLink" class="doc-link disabled" href="#" target="_blank" rel="noreferrer">
+              暂无飞书文档链接
+            </a>
+
+            <div class="info-stack">
+              <div>
+                <span>音频</span>
+                <strong id="audioStatus">未检测</strong>
+              </div>
+              <div>
+                <span>输出目录</span>
+                <strong id="jobDir">未选择</strong>
+              </div>
+              <div>
+                <span>错误</span>
+                <strong id="errorText">无</strong>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

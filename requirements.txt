@@ -1,0 +1,3 @@
+faster-whisper>=1.1.1
+openai>=1.78.0
+python-dotenv>=1.0.1

@@ -1,0 +1,12 @@
+.env
+.venv
+browser-profile
+data
+node_modules
+node_modules-partial-*
+output
+py
+requirements.txt
+scripts
+*.command
+package-lock.json

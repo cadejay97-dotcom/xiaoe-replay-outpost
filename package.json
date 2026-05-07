@@ -1,0 +1,29 @@
+{
+  "name": "xiaoe-replay-outpost",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "install:browsers": "playwright install chromium",
+    "test:audio": "node scripts/test_audio.mjs",
+    "record:manual": "AUDIO_TEST_SECONDS=60 AUDIO_TEST_TITLE=manual-record-test AUDIO_TEST_JOB_DIR=output/manual-record-test node scripts/test_audio.mjs",
+    "debug:import": "node scripts/debug_import.mjs",
+    "debug:require-trace": "node scripts/debug_require_trace.cjs",
+    "run:mvp": "node scripts/run_mvp.mjs",
+    "transcribe:existing": ".venv/bin/python py/transcribe_existing.py --job-dir output/2026315",
+    "postprocess:existing": "node scripts/postprocess_existing.mjs --job-dir output/2026315",
+    "serve": "node scripts/server.mjs",
+    "repair:ui": "node scripts/repair_ui_state.mjs",
+    "clean": "node scripts/clean_transcript.mjs",
+    "feishu": "node scripts/feishu_doc.mjs",
+    "feishu:check": "node scripts/feishu_check.mjs",
+    "feishu:base": "node scripts/feishu_base_index.mjs --job-dir output/2026315"
+  },
+  "dependencies": {
+    "@playwright/test": "1.52.0",
+    "dotenv": "^16.4.7",
+    "openai": "^4.104.0",
+    "slugify": "^1.6.6"
+  },
+  "devDependencies": {}
+}
