@@ -49,9 +49,16 @@
         </header>
 
         <section class="command-bar">
+          <div id="offlineNotice" class="offline-notice" role="status">
+            这是静态预览。真正采集需要在本机 Terminal 运行 npm run serve，然后打开 http://localhost:8787。
+          </div>
           <label class="input-group replay-input">
             <span>回放链接</span>
             <input id="replayUrl" type="url" placeholder="粘贴你的小鹅通回放链接" />
+          </label>
+          <label class="input-group title-input">
+            <span>标题（可选）</span>
+            <input id="manualTitle" type="text" placeholder="用于飞书字段“广泛解答”" />
           </label>
           <fieldset class="duration-group" aria-label="录制时长">
             <legend>录制时长</legend>
@@ -114,20 +121,24 @@
             </div>
 
             <div class="timeline">
-              <div class="step" data-step="recorded">
+              <div class="step" data-step="opening">
                 <span class="step-index">01</span>
+                <div><b>打开</b><small>拉起系统 Chrome</small></div>
+              </div>
+              <div class="step" data-step="recorded">
+                <span class="step-index">02</span>
                 <div><b>录音</b><small>生成 recording.wav</small></div>
               </div>
               <div class="step" data-step="transcribed">
-                <span class="step-index">02</span>
+                <span class="step-index">03</span>
                 <div><b>转写</b><small>生成 transcript_raw.md</small></div>
               </div>
               <div class="step" data-step="cleaned">
-                <span class="step-index">03</span>
+                <span class="step-index">04</span>
                 <div><b>清洗</b><small>生成 transcript_clean.md</small></div>
               </div>
               <div class="step" data-step="done">
-                <span class="step-index">04</span>
+                <span class="step-index">05</span>
                 <div><b>入库</b><small>生成飞书文档链接</small></div>
               </div>
             </div>

@@ -197,11 +197,27 @@ h2 {
 
 .command-bar {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(260px, 340px) 118px 150px;
+  grid-template-columns: minmax(280px, 1.2fr) minmax(180px, 0.8fr) minmax(260px, 340px) 118px 150px;
   gap: 12px;
   padding: 14px;
   margin-bottom: 16px;
   align-items: end;
+}
+
+.offline-notice {
+  display: none;
+  grid-column: 1 / -1;
+  padding: 11px 12px;
+  border: 1px solid rgba(184, 74, 50, 0.28);
+  border-radius: 8px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.offline-notice.visible {
+  display: block;
 }
 
 .input-group,

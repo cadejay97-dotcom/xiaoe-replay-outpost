@@ -34,10 +34,39 @@ function statusLabel(status) {
   return labels[status] || status || '未知';
 }
 
+function phaseLabel(job) {
+  const labels = {
+    created: '已创建',
+    opening: '打开中',
+    running: '采集中',
+    recording: '录音中',
+    recorded: '已录音',
+    transcribing: '转写中',
+    transcribed: '已转写',
+    cleaning: '清洗中',
+    cleaned: '已清洗',
+    feishu: '写飞书中',
+    postprocessing: '后处理中',
+    done: '已入库',
+    failed: '失败',
+  };
+  return labels[job?.phase] || statusLabel(job?.status);
+}
+
 function stepRank(status) {
-  const ranks = { recorded: 1, transcribed: 2, cleaned: 3, done: 4 };
-  if (status === 'running') return 1;
-  if (status === 'postprocessing') return 2;
+  const ranks = {
+    opening: 1,
+    running: 1,
+    recording: 2,
+    recorded: 2,
+    transcribing: 3,
+    transcribed: 3,
+    postprocessing: 3,
+    cleaning: 4,
+    cleaned: 4,
+    feishu: 5,
+    done: 5,
+  };
   return ranks[status] || 0;
 }
 
@@ -60,6 +89,7 @@ function renderService() {
   el.textContent = state.serviceOnline ? '服务在线' : '静态预览';
   el.classList.toggle('online', state.serviceOnline);
   el.classList.toggle('offline', !state.serviceOnline);
+  $('offlineNotice').classList.toggle('visible', !state.serviceOnline);
 }
 
 function renderMetrics() {
@@ -133,7 +163,7 @@ function renderJobs() {
       <div class="job-title">${escapeHtml(job.title || job.id)}</div>
       <div class="job-foot">
         <span>${escapeHtml(job.updatedAt || '')}</span>
-        <span class="pill ${pillClass(job.status)}">${statusLabel(job.status)}</span>
+        <span class="pill ${pillClass(job.status)}">${phaseLabel(job)}</span>
       </div>
     </button>
   `).join('');
@@ -147,8 +177,8 @@ function renderJobs() {
 }
 
 function renderDetail(job) {
-  $('currentStatus').textContent = job ? statusLabel(job.status) : '等待任务';
-  const rank = stepRank(job?.status);
+  $('currentStatus').textContent = job ? phaseLabel(job) : '等待任务';
+  const rank = stepRank(job?.phase || job?.status);
   [...document.querySelectorAll('.step')].forEach((step, index) => {
     step.classList.toggle('active', index + 1 <= rank);
   });
@@ -167,6 +197,7 @@ function renderDetail(job) {
     title: job.title,
     replayUrl: job.replayUrl,
     status: statusLabel(job.status),
+    phase: phaseLabel(job),
     duration: formatDuration(job.duration),
     durationSeconds: job.duration,
     updatedAt: job.updatedAt,
@@ -228,6 +259,7 @@ async function postJson(url, payload) {
 
 async function startRun() {
   const replayUrl = $('replayUrl').value.trim();
+  const title = $('manualTitle').value.trim();
   const recordSeconds = readRecordSeconds();
   if (!state.serviceOnline) {
     alert('先在 Terminal 里运行 npm run serve，再刷新页面。');
@@ -240,7 +272,7 @@ async function startRun() {
   state.submitting = true;
   render();
   try {
-    await postJson('/api/run', { replayUrl, recordSeconds, forceRerun: true });
+    await postJson('/api/run', { replayUrl, title, recordSeconds, forceRerun: true });
     await refresh();
   } finally {
     state.submitting = false;

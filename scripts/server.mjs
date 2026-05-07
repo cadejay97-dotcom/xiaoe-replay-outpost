@@ -1,6 +1,6 @@
 import './load_env.mjs';
 import { createServer } from 'node:http';
-import { appendFileSync, createReadStream, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { appendFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { readTextIfExists, safeReadJson, writeJson } from './lib_state.mjs';
@@ -48,6 +48,24 @@ function allJobs() {
   const failed = safeReadJson(failedPath, []);
   const outputJobs = scanOutputJobs();
   return mergeJobs(jobs, processed, failed, outputJobs).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+}
+
+function inferPhase(job) {
+  if (job.status === 'done') return 'done';
+  if (job.status === 'failed') return 'failed';
+  const logPath = job.logPath;
+  if (!logPath || !existsSync(logPath)) return job.status === 'postprocessing' ? 'transcribing' : job.status;
+  const log = readFileSync(logPath, 'utf8').slice(-16000);
+  if (/飞书写入完成|飞书文档链接已保存|多维表格索引写入完成|写入 processed\.json/.test(log)) return 'feishu';
+  if (/写入飞书|创建飞书文档|开始写入飞书|feishu-base/.test(log)) return 'feishu';
+  if (/清洗完成|transcript_clean\.md 应已生成/.test(log)) return 'cleaned';
+  if (/清洗逐字稿|开始清洗/.test(log)) return 'cleaning';
+  if (/转写完成|transcript_raw\.md 应已生成/.test(log)) return 'transcribed';
+  if (/开始本地转写|开始 OpenAI Whisper API 转写|开始火山 ASR 转写|转写已有录音/.test(log)) return 'transcribing';
+  if (/录音结束|wav 已生成|recording\.wav/.test(log)) return 'recorded';
+  if (/开始录音|启动录音|秒后开始录音/.test(log)) return 'recording';
+  if (/已请求系统 Chrome 打开|打开 Chrome|正在打开 REPLAY_URL|页面加载完成/.test(log)) return 'opening';
+  return job.status;
 }
 
 function normalizeUiJobs(jobs) {
@@ -124,7 +142,8 @@ function scanOutputJobs() {
         title: path.basename(dir),
         jobDir: dir,
         replayUrl: readTextIfExists(path.join(dir, 'source_url.txt')).trim(),
-        status: docUrl ? 'done' : cleanExists ? 'cleaned' : rawExists ? 'transcribed' : recordingExists ? 'recorded' : 'created',
+      status: docUrl ? 'done' : cleanExists ? 'cleaned' : rawExists ? 'transcribed' : recordingExists ? 'recorded' : 'created',
+      phase: docUrl ? 'done' : cleanExists ? 'cleaned' : rawExists ? 'transcribed' : recordingExists ? 'recorded' : 'created',
         feishuDocUrl: docUrl,
         isSilent: audioReport.is_probably_silent,
         duration: audioReport.duration_seconds,
@@ -157,6 +176,11 @@ function saveUiJob(job) {
   writeJson(jobsPath, jobs);
 }
 
+function enrichJob(job) {
+  const phase = inferPhase(job);
+  return { ...job, phase };
+}
+
 function hasActiveJob() {
   return allJobs().some((job) => activeStatuses.has(job.status));
 }
@@ -185,10 +209,12 @@ function spawnJob(job, command, args, env) {
     running.delete(job.id);
     const current = safeReadJson(jobsPath, []).find((item) => item.id === job.id) || job;
     const done = code === 0;
+    const failureText = done ? '' : summarizeFailure(logPath, command, code);
     saveUiJob({
       ...current,
       status: done ? 'done' : 'failed',
-      error: done ? '' : `${command} exited with code ${code}. 详情见 ${logPath}`,
+      phase: done ? 'done' : 'failed',
+      error: failureText,
       logPath,
       updatedAt: new Date().toISOString()
     });
@@ -196,14 +222,39 @@ function spawnJob(job, command, args, env) {
   return child;
 }
 
+function summarizeFailure(logPath, command, code) {
+  let tail = '';
+  try {
+    tail = readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).slice(-18).join('\n');
+  } catch {}
+
+  const lower = tail.toLowerCase();
+  let hint = '';
+  if (/keychain not initialized/.test(lower)) {
+    hint = '飞书 CLI 无法读取本机 keychain。请在普通 Terminal 里运行 npm run feishu:check。';
+  } else if (/scope|permission|missing required scope/.test(lower)) {
+    hint = '飞书 CLI 权限不足。请运行 npm run feishu:check 并按提示补授权。';
+  } else if (/is_probably_silent|录音可能是静音|blackhole/.test(lower)) {
+    hint = '录音可能是静音。请检查系统输出是否为多输出设备，且包含 BlackHole 2ch。';
+  } else if (/missing recording\.wav/.test(lower)) {
+    hint = '没有找到 recording.wav，请先完成一次录音或选择正确输出目录。';
+  }
+
+  return [
+    hint || `${command} exited with code ${code}.`,
+    `日志：${logPath}`,
+    tail ? `\n最近日志：\n${tail}` : ''
+  ].join('\n').trim();
+}
+
 async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/jobs') {
-    return json(res, 200, { jobs: allJobs(), running: [...running.keys()] });
+    return json(res, 200, { jobs: allJobs().map(enrichJob), running: [...running.keys()] });
   }
 
   if (req.method === 'GET' && pathname.startsWith('/api/jobs/')) {
     const id = decodeURIComponent(pathname.split('/').pop());
-    const job = allJobs().find((item) => item.id === id);
+    const job = allJobs().map(enrichJob).find((item) => item.id === id);
     return job ? json(res, 200, { job }) : json(res, 404, { error: 'job not found' });
   }
 
@@ -211,13 +262,15 @@ async function handleApi(req, res, pathname) {
     const body = await readBody(req);
     if (hasActiveJob()) return json(res, 409, { error: '已有任务正在运行，请等当前任务结束后再开始。' });
     const replayUrl = String(body.replayUrl || '').trim();
+    const manualTitle = String(body.title || '').trim();
     if (!replayUrl) return json(res, 400, { error: 'replayUrl is required' });
     const id = `run-${Date.now()}`;
     const job = {
       id,
-      title: '新采集任务',
+      title: manualTitle || '新采集任务',
       replayUrl,
       status: 'running',
+      phase: 'opening',
       updatedAt: new Date().toISOString()
     };
     spawnJob(job, 'npm', ['run', 'run:mvp'], {
@@ -228,6 +281,7 @@ async function handleApi(req, res, pathname) {
       BROWSER_EXECUTABLE_PATH: body.browserExecutablePath || process.env.BROWSER_EXECUTABLE_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       BROWSER_DRIVER: body.browserDriver || process.env.BROWSER_DRIVER || 'open-chrome',
       MANUAL_START_DELAY_SECONDS: String(Number(body.manualStartDelaySeconds || process.env.MANUAL_START_DELAY_SECONDS || 20)),
+      MANUAL_TITLE: manualTitle || process.env.MANUAL_TITLE || '小鹅通回放手动采集',
       PLAYWRIGHT_IMPORT_TIMEOUT_MS: process.env.PLAYWRIGHT_IMPORT_TIMEOUT_MS || '120000',
       DEBUG_BROWSER_TIMEOUT_MS: process.env.DEBUG_BROWSER_TIMEOUT_MS || '120000'
     });
@@ -245,6 +299,7 @@ async function handleApi(req, res, pathname) {
       title,
       jobDir: path.resolve(cwd, jobDir),
       status: 'postprocessing',
+      phase: 'transcribing',
       updatedAt: new Date().toISOString()
     };
     spawnJob(job, 'node', ['scripts/postprocess_existing.mjs', '--job-dir', jobDir, '--title', title], {});
