@@ -1,6 +1,6 @@
 import './load_env.mjs';
 import { createServer } from 'node:http';
-import { appendFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { readTextIfExists, safeReadJson, writeJson } from './lib_state.mjs';
@@ -12,6 +12,7 @@ const processedPath = path.resolve(cwd, 'data/processed.json');
 const failedPath = path.resolve(cwd, 'data/failed_jobs.json');
 const publicDir = path.resolve(cwd, 'public');
 const logDir = path.resolve(cwd, 'output/ui-logs');
+const runnerLogPath = process.env.RUNNER_LOG_PATH?.trim();
 const running = new Map();
 const activeStatuses = new Set(['running', 'postprocessing']);
 
@@ -22,6 +23,17 @@ function json(res, status, body) {
     'content-length': Buffer.byteLength(text)
   });
   res.end(text);
+}
+
+function runnerLog(message) {
+  const line = `[runner] ${new Date().toISOString()} ${message}\n`;
+  process.stdout.write(line);
+  if (runnerLogPath) {
+    try {
+      mkdirSync(path.dirname(runnerLogPath), { recursive: true });
+      appendFileSync(runnerLogPath, line, 'utf8');
+    } catch {}
+  }
 }
 
 function readBody(req) {
@@ -46,7 +58,7 @@ function allJobs() {
   const jobs = normalizeUiJobs(safeReadJson(jobsPath, []));
   const processed = safeReadJson(processedPath, {});
   const failed = safeReadJson(failedPath, []);
-  const outputJobs = scanOutputJobs();
+  const outputJobs = process.env.UI_SCAN_OUTPUT === '1' ? scanOutputJobs() : [];
   return mergeJobs(jobs, processed, failed, outputJobs).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
 
@@ -55,7 +67,7 @@ function inferPhase(job) {
   if (job.status === 'failed') return 'failed';
   const logPath = job.logPath;
   if (!logPath || !existsSync(logPath)) return job.status === 'postprocessing' ? 'transcribing' : job.status;
-  const log = readFileSync(logPath, 'utf8').slice(-16000);
+  const log = readTail(logPath, 16000);
   if (/飞书写入完成|飞书文档链接已保存|多维表格索引写入完成|写入 processed\.json/.test(log)) return 'feishu';
   if (/写入飞书|创建飞书文档|开始写入飞书|feishu-base/.test(log)) return 'feishu';
   if (/清洗完成|transcript_clean\.md 应已生成/.test(log)) return 'cleaned';
@@ -66,6 +78,22 @@ function inferPhase(job) {
   if (/开始录音|启动录音|秒后开始录音/.test(log)) return 'recording';
   if (/已请求系统 Chrome 打开|打开 Chrome|正在打开 REPLAY_URL|页面加载完成/.test(log)) return 'opening';
   return job.status;
+}
+
+function readTail(file, maxBytes = 16000) {
+  let fd;
+  try {
+    const size = statSync(file).size;
+    const length = Math.min(size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    fd = openSync(file, 'r');
+    readSync(fd, buffer, 0, length, Math.max(0, size - length));
+    return buffer.toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function normalizeUiJobs(jobs) {
@@ -136,6 +164,7 @@ function scanOutputJobs() {
     .map((dir) => {
       const audioReport = safeReadJson(path.join(dir, 'audio_report.json'), {});
       const baseStatus = safeReadJson(path.join(dir, 'feishu_base_status.json'), {});
+      const jobState = safeReadJson(path.join(dir, 'job_state.json'), {});
       const docUrl = readTextIfExists(path.join(dir, 'feishu_doc_url.txt')).trim();
       const cleanExists = hasContent(path.join(dir, 'transcript_clean.md'));
       const rawExists = hasContent(path.join(dir, 'transcript_raw.md'));
@@ -143,13 +172,15 @@ function scanOutputJobs() {
       const status = docUrl && baseStatus.status === 'failed'
         ? 'base_failed'
         : docUrl ? 'done' : cleanExists ? 'cleaned' : rawExists ? 'transcribed' : recordingExists ? 'recorded' : 'created';
+      const phase = jobState.phase || status;
       return {
         id: path.basename(dir),
         title: path.basename(dir),
         jobDir: dir,
         replayUrl: readTextIfExists(path.join(dir, 'source_url.txt')).trim(),
         status,
-        phase: status,
+        phase,
+        jobState,
         feishuDocUrl: docUrl,
         feishuBaseStatus: baseStatus.status || '',
         feishuBaseError: baseStatus.error || '',
@@ -231,10 +262,7 @@ function spawnJob(job, command, args, env) {
 }
 
 function summarizeFailure(logPath, command, code) {
-  let tail = '';
-  try {
-    tail = readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).slice(-18).join('\n');
-  } catch {}
+  const tail = readTail(logPath, 12000).split(/\r?\n/).filter(Boolean).slice(-18).join('\n');
 
   const lower = tail.toLowerCase();
   let hint = '';
@@ -259,12 +287,16 @@ function checkFeishu() {
   const result = spawnSync('npm', ['run', 'feishu:check'], {
     cwd,
     encoding: 'utf8',
-    env: process.env
+    env: process.env,
+    timeout: Number(process.env.FEISHU_CHECK_TIMEOUT_MS || 8000)
   });
   const output = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
   let status = 'connected';
   let label = '飞书已连接';
-  if (result.status !== 0) {
+  if (result.error?.code === 'ETIMEDOUT') {
+    status = 'timeout';
+    label = '飞书检查超时';
+  } else if (result.status !== 0) {
     if (/keychain not initialized/i.test(output)) {
       status = 'keychain';
       label = 'Keychain 不可用';
@@ -286,6 +318,19 @@ function checkFeishu() {
 }
 
 async function handleApi(req, res, pathname) {
+  if (req.method === 'GET' && pathname === '/api/health') {
+    return json(res, 200, {
+      ok: true,
+      service: 'xiaoe-replay-outpost-runner',
+      pid: process.pid,
+      port,
+      cwd,
+      uptimeSeconds: Math.round(process.uptime()),
+      running: [...running.keys()],
+      checkedAt: new Date().toISOString()
+    });
+  }
+
   if (req.method === 'GET' && pathname === '/api/jobs') {
     return json(res, 200, { jobs: allJobs().map(enrichJob), running: [...running.keys()] });
   }
@@ -387,6 +432,14 @@ function serveStatic(req, res, pathname) {
 }
 
 const server = createServer(async (req, res) => {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
+  res.setHeader('access-control-allow-headers', 'content-type');
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith('/api/')) {
@@ -399,6 +452,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
+server.requestTimeout = Number(process.env.UI_REQUEST_TIMEOUT_MS || 30000);
+server.headersTimeout = Number(process.env.UI_HEADERS_TIMEOUT_MS || 35000);
+
 server.on('error', (error) => {
   console.error(`[ui] 本地服务启动失败：${error.code || error.name} ${error.message}`);
   console.error('[ui] 如果这是 Codex 沙箱里的 EPERM，请在 macOS Terminal 里运行：npm run serve');
@@ -406,5 +462,5 @@ server.on('error', (error) => {
 });
 
 server.listen(port, '127.0.0.1', () => {
-  console.log(`[ui] 前哨站采集台已启动：http://localhost:${port}`);
+  runnerLog(`前哨站采集台已启动：http://localhost:${port}`);
 });

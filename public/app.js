@@ -258,7 +258,7 @@ function escapeHtml(text) {
 
 async function refresh() {
   try {
-    const res = await fetch('/api/jobs');
+    const res = await fetchWithTimeout('/api/jobs', {}, 5000);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     state.serviceOnline = true;
@@ -276,7 +276,7 @@ async function refreshFeishu() {
   if (state.feishuChecking || Date.now() - state.feishuCheckedAt < 15000) return;
   state.feishuChecking = true;
   try {
-    const res = await fetch('/api/feishu/check');
+    const res = await fetchWithTimeout('/api/feishu/check', {}, 10000);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.feishu = await res.json();
     state.feishuCheckedAt = Date.now();
@@ -291,14 +291,24 @@ async function refreshFeishu() {
 }
 
 async function postJson(url, payload) {
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
-  });
+  }, 10000);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'request failed');
   return data;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function startRun() {
